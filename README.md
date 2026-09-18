@@ -299,6 +299,17 @@ Then run the plain agent once (`-a claude-code`, same task and model) and compar
 turns and tokens in `result.json`. If both pass with similar numbers, the swap is neutral and
 you can start changing `server.py`.
 
+### First results (2026-09-18, one run each, claude-sonnet-5, html-js-filter)
+
+| Job folder | Agent | Reward | Tests | Tool calls | Tokens in / out |
+|---|---|---|---|---|---|
+| `jobs/baseline-html-js-filter` | stock `claude-code` | 0 | 1 pass, 1 fail (`test_filter_blocks_xss`) | Bash 4, Write 1 | 199k / 9k |
+| `jobs/mcpbash-repro` | `claude-code-mcp-bash` | 0 | 1 pass, 1 fail (same test) | mcp__mcpbash__bash 9, Write 4, Edit 5, Read 2 | 814k / 13k |
+
+Both fail the same hidden test, so the swap did not change the outcome. Zero plain `Bash`
+calls in the MCP run, so the model really used our tool. The token gap is one run of noise
+(the model simply explored more); run each side a few times before reading anything into it.
+
 ### Testing the server without Harbor (fast loop)
 
 ```bash
@@ -318,6 +329,11 @@ claude -p "Use the mcpbash bash tool to run: uname -a" --disallowedTools Bash \
 
 ### Gotchas
 
+- **Launch long Harbor runs from a normal terminal window.** Two runs started with the `!`
+  shell inside a Claude Code session died with `CancelledError` during the agent's
+  `apt-get install nodejs npm` step (Harbor only cancels on Ctrl-C/SIGTERM, so the shell
+  killed it). The same command from a plain shell ran fine, about 10 minutes total.
+- If a run is cancelled, its container can stay up. `docker ps` and `docker stop <name>`.
 - `--mcp-config` takes a list of values, so it swallows anything after it. Put the prompt in
   `-p "..."` before the flag, or the CLI says "MCP config file not found: <your prompt>".
 - MCP tool names look like `mcp__<server>__<tool>`, so ours is `mcp__mcpbash__bash`.
