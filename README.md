@@ -183,7 +183,10 @@ harbor run --help                    # every flag
 harbor run -d terminal-bench/terminal-bench@latest -a oracle -i 'zzz' --dry-run   # errors out but prints example task names
 ```
 
-## Next step: benchmarking a modified tool (not done yet)
+## Next step: benchmarking a modified tool
+
+**Done on 2026-09-18 for the Bash tool:** see "Swapping Claude Code's Bash tool (MCP)" below.
+The notes in this section still apply to other kinds of changes.
 
 - **If the change is inside Claude Code:** the agent installs Claude Code fresh in the container.
   `--ak version=X` picks a published version. For an unpublished local build you would need to
@@ -242,3 +245,87 @@ PYTHONPATH=. harbor run -d terminal-bench/terminal-bench@latest -i '*html-js-fil
 - Edit `SYSTEM_PROMPT` in `mini_agent.py`, re-run the same task, compare transcripts.
 - Raise `MAX_STEPS` for harder tasks.
 - Add a "think first" line before each command and see whether the score changes.
+
+## Swapping Claude Code's Bash tool (MCP) (added 2026-09-18)
+
+Claude Code is closed source, so you cannot edit its built-in `Bash` tool. Instead we switch
+`Bash` off and give Claude Code a look-alike tool through MCP (Model Context Protocol: a small
+program Claude Code starts, then asks "which tools do you have?" and "run this tool"). To
+experiment with how commands are run, edit one file and re-run.
+
+### Files
+
+| File | What it is |
+|---|---|
+| `mcp_bash/server.py` | The MCP server. Plain Python 3, no packages, so it runs inside any task container that has `python3`. Offers one tool, `bash`, with the same inputs as the real tool (`command`, `timeout` in ms, `description`). Remembers the working directory between calls, returns stdout + stderr, adds `Exit code N` when non-zero, kills the command after the timeout, truncates output over 30k characters. |
+| `mcp_bash_agent.py` | A Harbor agent that is the built-in `claude-code` agent plus two things: it uploads `server.py` to `/opt/mcp_bash/` in the container, and registers it as MCP server `mcpbash`. Subscription auth, trajectories and all `--ak` options are inherited unchanged. |
+| `run_mcp_bash.sh` | One-line launcher. `./run_mcp_bash.sh ['*task-glob'] [job-name]`. `MODEL=... ./run_mcp_bash.sh` to change the model. |
+
+### Run it
+
+```bash
+cd ~/Projects/tb-harbor
+export CLAUDE_CODE_OAUTH_TOKEN='sk-ant-oat...'   # from `claude setup-token`, see "Using a subscription"
+export CLAUDE_FORCE_OAUTH=1
+./run_mcp_bash.sh                                # html-js-filter, job name mcpbash-html-js-filter
+```
+
+The script runs the full command, which is the normal one plus three things:
+
+```bash
+PYTHONPATH=. harbor run -d terminal-bench/terminal-bench@latest -i '*html-js-filter' -n 1 \
+  -a mcp_bash_agent:ClaudeCodeMcpBash -m anthropic/claude-sonnet-5 \
+  --ak disallowed_tools=Bash \
+  --ak append_system_prompt="The Bash tool is unavailable. Use the mcp__mcpbash__bash tool to run shell commands." \
+  --job-name mcpbash-html-js-filter
+```
+
+- `-a mcp_bash_agent:ClaudeCodeMcpBash` = our agent class (module:Class from this folder).
+- `--ak disallowed_tools=Bash` = turn the real Bash tool off. Without this the model keeps using it.
+- `--ak append_system_prompt=...` = tell the model where shell commands now live.
+
+### Check that the swap really happened
+
+```bash
+# 1. score
+python3 -c "import json,glob; [print(f, json.load(open(f)).get('reward')) for f in glob.glob('jobs/mcpbash-html-js-filter/*/result.json')]"
+# 2. which tools the model called: expect mcp__mcpbash__bash, and no plain Bash
+grep -o '"name": *"[A-Za-z_]*"' jobs/mcpbash-html-js-filter/*/agent/trajectory.json | sort | uniq -c
+# 3. server errors, if any (the server logs to stderr with a [mcp-bash] prefix)
+grep -rl 'mcp-bash' jobs/mcpbash-html-js-filter/*/agent/ 2>/dev/null
+```
+
+Then run the plain agent once (`-a claude-code`, same task and model) and compare reward,
+turns and tokens in `result.json`. If both pass with similar numbers, the swap is neutral and
+you can start changing `server.py`.
+
+### Testing the server without Harbor (fast loop)
+
+```bash
+# a) raw protocol: pipe JSON lines in, read replies out
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"bash","arguments":{"command":"cd /tmp && pwd"}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"bash","arguments":{"command":"pwd; false"}}}' \
+  | python3 mcp_bash/server.py
+# expect: pwd on the 4th call is still /tmp (cwd persisted) and "Exit code 1"
+
+# b) inside your local Claude Code (uses your normal login, no token needed)
+claude -p "Use the mcpbash bash tool to run: uname -a" --disallowedTools Bash \
+  --permission-mode bypassPermissions --output-format json \
+  --mcp-config '{"mcpServers":{"mcpbash":{"type":"stdio","command":"python3","args":["'$PWD'/mcp_bash/server.py"]}}}'
+```
+
+### Gotchas
+
+- `--mcp-config` takes a list of values, so it swallows anything after it. Put the prompt in
+  `-p "..."` before the flag, or the CLI says "MCP config file not found: <your prompt>".
+- MCP tool names look like `mcp__<server>__<tool>`, so ours is `mcp__mcpbash__bash`.
+- The server is uploaded in the agent's `install()` step. A task image without `python3`
+  cannot start it; look for "python3: not found" in the job's `agent/` logs.
+- `MCPServerConfig` has no `env` field, so settings for the server must go in `args`
+  (e.g. add flags to `server.py`) rather than environment variables.
+- Harbor writes the MCP list to `$CLAUDE_CONFIG_DIR/.claude.json` per run (user scope), so
+  there is no trust prompt. Source: `_build_register_mcp_servers_command` in
+  `harbor/agents/installed/claude_code.py`.
+- The real Bash tool also has `run_in_background`; the copy leaves that out for now.
