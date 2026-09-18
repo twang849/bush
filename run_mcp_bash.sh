@@ -15,5 +15,5 @@ MODEL="${MODEL:-anthropic/claude-sonnet-5}"
 PYTHONPATH=. harbor run -d terminal-bench/terminal-bench@latest -i "$TASK" -n 1 \
   -a mcp_bash_agent:ClaudeCodeMcpBash -m "$MODEL" \
   --ak disallowed_tools=Bash \
-  --ak append_system_prompt="The Bash tool is unavailable. Use the mcp__mcpbash__bash tool to run shell commands." \
+  --ak append_system_prompt="The Bash tool has been renamed mcp__mcpbash__bash." \
   --job-name "$JOB"
