@@ -1,0 +1,4 @@
+.env.local
+jobs/
+*.log
+__pycache__/
