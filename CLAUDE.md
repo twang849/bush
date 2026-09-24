@@ -11,8 +11,12 @@ the unmodified agent.
   gives it the task, runs the tests, and writes results to `jobs/`.
 
 Claude Code is closed source, so we cannot edit its Bash tool. Instead we turn it off
-(`--ak disallowed_tools=Bash`), register an MCP server that offers one tool named
+(`--ak disallowed_tools=...`), register an MCP server that offers one tool named
 `mcp__mcpbash__bash`, and tell the model the Bash tool was renamed.
+
+By default `run_mcp_bash.sh` also turns off the file tools (Read, Edit, Write, Grep, Glob,
+NotebookEdit), so all file work goes through our bash tool. Runs before 2026-09-24 turned off
+only Bash. Set `DISALLOWED=Bash` to get the old setup.
 
 ## Architecture
 
@@ -30,12 +34,17 @@ run_mcp_bash.sh
 
 - `README.md` – full Harbor/Terminal-Bench cheat sheet: install, auth (API key or subscription),
   flags, reading results, gotchas, first benchmark numbers. Read this first.
-- `SHORT_TASKS.md` – the three shortest tasks, with run commands and current scores.
+- `SHORT_TASKS.md` – the three shortest Terminal-Bench tasks, with run commands and current scores.
+- `SHORT_SWE_TASKS.md` – the three shortest SWE-bench Verified tasks (pytest-heavy alternative), with run commands.
 - `run_mcp_bash.sh` – one-liner to run a task with the MCP Bash agent.
   Usage: `./run_mcp_bash.sh [task-glob] [job-name]` (defaults to `*html-js-filter`).
+  Env vars: `MODEL`, `DATASET`, `DISALLOWED` (comma-separated built-in tools to turn off).
 - `mcp_bash_agent.py` – the custom Harbor agent (`ClaudeCodeMcpBash`).
 - `mcp_bash/server.py` – the MCP server. Stdlib only, JSON-RPC over stdin/stdout, one `bash`
   tool that mimics the real one (persistent cwd, timeout, stdout+stderr, exit code).
+  It also caches the last output of each exact command (in memory, per session): a repeat
+  with the same output returns a short "unchanged" note, a changed output returns a unified diff
+  (or the full output if more than 50% of lines changed).
 - `jobs/` – Harbor run outputs (gitignored). One folder per `--job-name`.
 - `.env.local`, `*.log` – local auth and run logs (gitignored).
 

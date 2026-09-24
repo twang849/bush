@@ -8,10 +8,16 @@ tool: same inputs (command, timeout in ms, description), runs the command in
 bash, remembers the working directory between calls, returns stdout + stderr,
 reports a non-zero exit code, and kills the command after the timeout.
 
+Version 0.2 adds an output cache (in memory, so one per session). If the exact
+same command text was run before, the model gets a short "unchanged" note when
+the output (including exit code) is the same, or a unified diff when it is not.
+If more than half the lines changed, it gets the full output instead of a diff.
+
 Protocol: JSON-RPC 2.0, one JSON object per line on stdin -> one per line on
 stdout. Only stdlib is used so it runs inside any container that has python3.
 Never print to stdout except protocol replies; use stderr for logging.
 """
+import difflib
 import json
 import os
 import subprocess
@@ -27,7 +33,9 @@ TOOL = {
     "description": (
         "Executes a bash command and returns its output. The working directory "
         "persists between calls. `timeout` is in milliseconds (default 120000, "
-        "max 600000)."
+        "max 600000). If a command was run before in this session, you get "
+        "either a note that the output is unchanged, or a unified diff against "
+        "the previous output (or the full output if more than half the lines changed)."
     ),
     "inputSchema": {
         "type": "object",
@@ -54,9 +62,42 @@ def log(msg: str) -> None:
 class BashRunner:
     def __init__(self) -> None:
         self.cwd = os.environ.get("MCP_BASH_CWD") or os.getcwd()
+        # Exact command text -> full (untruncated) text of its last run.
+        self.cache: dict[str, str] = {}
 
-    def run(self, command: str, timeout_ms: int | None) -> tuple[str, bool]:
-        """Run `command` in bash. Returns (text for the model, is_error)."""
+    def run_cached(self, command: str, timeout_ms: int | None) -> tuple[str, bool]:
+        """Like run(), but replaces repeated output with an "unchanged" note or a diff."""
+        full, exit_code = self.run(command, timeout_ms)
+        is_error = exit_code != 0
+        if exit_code is None:
+            # Timeout or no bash: never cached.
+            return _truncate(full), True
+
+        old = self.cache.get(command)
+        self.cache[command] = full
+        if old is None:
+            status, text = "miss", _truncate(full)
+        elif old == full:
+            status = "hit"
+            text = f"Output unchanged since the last run of this exact command (exit code {exit_code})."
+        elif _changed_fraction(old, full) > 0.5:
+            # Mostly different output: a diff would be harder to read than the output itself.
+            status, text = "rewrite", _truncate(full)
+        else:
+            status = "diff"
+            diff = difflib.unified_diff(
+                old.splitlines(), full.splitlines(),
+                fromfile="previous", tofile="current", lineterm="", n=2,
+            )
+            text = _truncate(
+                "Output changed since the last run of this exact command. "
+                "Unified diff (previous -> current):\n" + "\n".join(diff)
+            )
+        log(f"cache={status} full_chars={len(full)} sent_chars={len(text)}")
+        return text, is_error
+
+    def run(self, command: str, timeout_ms: int | None) -> tuple[str, int | None]:
+        """Run `command` in bash. Returns (full untruncated text, exit code or None on timeout/no bash)."""
         if timeout_ms is None:
             timeout_ms = DEFAULT_TIMEOUT_MS
         timeout_ms = int(min(max(timeout_ms, 1), MAX_TIMEOUT_MS))
@@ -78,10 +119,10 @@ class BashRunner:
             partial = _decode(exc.stdout) + _decode(exc.stderr)
             text = f"Command timed out after {timeout_ms}ms"
             if partial.strip():
-                text += "\n" + _truncate(partial)
-            return text, True
+                text += "\n" + partial
+            return text, None
         except FileNotFoundError:
-            return "bash not found in this environment", True
+            return "bash not found in this environment", None
 
         stdout, new_cwd = _split_cwd_marker(proc.stdout)
         if new_cwd and os.path.isdir(new_cwd):
@@ -95,7 +136,7 @@ class BashRunner:
         if proc.returncode != 0:
             parts.append(f"Exit code {proc.returncode}")
         text = "\n".join(parts) if parts else "(no output)"
-        return _truncate(text), proc.returncode != 0
+        return text, proc.returncode
 
 
 def _decode(data) -> str:
@@ -104,6 +145,17 @@ def _decode(data) -> str:
     if isinstance(data, bytes):
         return data.decode("utf-8", errors="replace")
     return data
+
+
+def _changed_fraction(old: str, new: str) -> float:
+    """Share of lines (0..1) that differ between two outputs, measured against the longer one."""
+    old_lines, new_lines = old.splitlines(), new.splitlines()
+    total = max(len(old_lines), len(new_lines))
+    if total == 0:
+        return 0.0
+    matcher = difflib.SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+    same = sum(block.size for block in matcher.get_matching_blocks())
+    return 1 - same / total
 
 
 def _split_cwd_marker(stdout: str) -> tuple[str, str | None]:
@@ -157,7 +209,7 @@ def main() -> None:
             reply(msg_id, {
                 "protocolVersion": params.get("protocolVersion", "2025-06-18"),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "mcp-bash", "version": "0.1"},
+                "serverInfo": {"name": "mcp-bash", "version": "0.2"},
             })
         elif method == "tools/list":
             reply(msg_id, {"tools": [TOOL]})
@@ -172,7 +224,7 @@ def main() -> None:
                 reply(msg_id, {"content": [{"type": "text", "text": "Missing required `command`"}],
                                "isError": True})
                 continue
-            text, is_error = runner.run(command, args.get("timeout"))
+            text, is_error = runner.run_cached(command, args.get("timeout"))
             reply(msg_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
         elif method == "ping":
             reply(msg_id, {})

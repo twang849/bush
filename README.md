@@ -345,3 +345,20 @@ claude -p "Use the mcpbash bash tool to run: uname -a" --disallowedTools Bash \
   there is no trust prompt. Source: `_build_register_mcp_servers_command` in
   `harbor/agents/installed/claude_code.py`.
 - The real Bash tool also has `run_in_background`; the copy leaves that out for now.
+
+## Running SWE-bench tasks
+
+The same agent works on SWE-bench Verified (real GitHub issues in Python repos). Set
+`DATASET` to switch datasets; the hub name is `swe-bench/swe-bench-verified`.
+
+```bash
+DATASET=swe-bench/swe-bench-verified@latest ./run_mcp_bash.sh '*scikit-learn-14141' mcpbash-sklearn-14141
+```
+
+- SWE-bench images are Intel-only. On Apple Silicon the build fails with
+  `no match for platform in manifest` unless `DOCKER_DEFAULT_PLATFORM=linux/amd64` is set.
+  `run_mcp_bash.sh` now exports it by default, and Docker runs the image under emulation.
+- First result (2026-09-18): `scikit-learn__scikit-learn-14141`, Sonnet 5, reward 1.0,
+  3 min 11 s, ~187k input tokens. The model fixed it with Grep/Read/Edit only and never
+  called `mcp__mcpbash__bash`, so this task says nothing about the MCP tool itself. Pick
+  tasks that need test runs or installs to actually exercise it.
