@@ -41,7 +41,10 @@ run_mcp_bash.sh
   Env vars: `MODEL`, `DATASET`, `DISALLOWED` (comma-separated built-in tools to turn off).
 - `mcp_bash_agent.py` – the custom Harbor agent (`ClaudeCodeMcpBash`).
 - `mcp_bash/server.py` – the MCP server. Stdlib only, JSON-RPC over stdin/stdout, one `bash`
-  tool that mimics the real one (persistent cwd, timeout, stdout+stderr, exit code).
+  tool that mimics the real one (persistent cwd, timeout, stdout+stderr, exit code). Output over
+  2000 chars is not returned: it is saved to `/tmp/mcp_bash_results/NNNN.txt` (env
+  `MCP_BASH_RESULTS_DIR`) and the reply gives the path, exit code and size. Commands that mention
+  the results folder always get output directly. Runs before 2026-09-25 returned all output directly.
 - `jobs/` – Harbor run outputs (gitignored). One folder per `--job-name`.
 - `.env.local`, `*.log` – local auth and run logs (gitignored).
 

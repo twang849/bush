@@ -41,6 +41,6 @@ mkdir -p "jobs/$JOB"
   PYTHONPATH=. harbor run -d "$DATASET" -i "$TASK" -n 1 \
     -a mcp_bash_agent:ClaudeCodeMcpBash -m "$MODEL" \
     --ak disallowed_tools="$DISALLOWED" \
-    --ak append_system_prompt="The Bash tool has been renamed mcp__mcpbash__bash. The tools $DISALLOWED are disabled; use shell commands through mcp__mcpbash__bash for them (cat, grep, find, sed, heredocs, ...)." \
+    --ak append_system_prompt="The Bash tool has been renamed mcp__mcpbash__bash. The tools $DISALLOWED are disabled; use shell commands through mcp__mcpbash__bash for them (cat, grep, find, sed, heredocs, ...). If a command prints more than 2000 characters, the output is saved to a file under /tmp/mcp_bash_results and you get the path; read it with sed -n, head, tail or grep." \
     --job-name "$JOB"
 } 2>&1 | tee -a "jobs/$JOB/run.log"

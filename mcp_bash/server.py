@@ -8,6 +8,12 @@ tool: same inputs (command, timeout in ms, description), runs the command in
 bash, remembers the working directory between calls, returns stdout + stderr,
 reports a non-zero exit code, and kills the command after the timeout.
 
+Output over SAVE_THRESHOLD_CHARS is NOT sent back directly. It is saved to a
+numbered file in RESULTS_DIR (0001.txt, 0002.txt, ...) and the reply is a short
+note: the path, exit code and size. The model reads the file with bash (cat,
+sed -n, grep, ...). Commands that mention RESULTS_DIR always get their output
+sent back directly, so reading a saved file does not get saved again.
+
 Protocol: JSON-RPC 2.0, one JSON object per line on stdin -> one per line on
 stdout. Only stdlib is used so it runs inside any container that has python3.
 Never print to stdout except protocol replies; use stderr for logging.
@@ -21,13 +27,19 @@ DEFAULT_TIMEOUT_MS = 120_000
 MAX_TIMEOUT_MS = 600_000
 MAX_OUTPUT_CHARS = 30_000
 CWD_MARKER = "__MCP_BASH_CWD__"
+RESULTS_DIR = os.environ.get("MCP_BASH_RESULTS_DIR", "/tmp/mcp_bash_results")
+SAVE_THRESHOLD_CHARS = 2_000
 
 TOOL = {
     "name": "bash",
     "description": (
-        "Executes a bash command and returns its output. The working directory "
-        "persists between calls. `timeout` is in milliseconds (default 120000, "
-        "max 600000)."
+        "Executes a bash command and returns its output. Output over "
+        f"{SAVE_THRESHOLD_CHARS} characters is not returned: it is saved to a file "
+        f"in {RESULTS_DIR} and you get back the file path, exit code and size. "
+        "Read that file with commands like `sed -n`, `head`, `tail` or `grep`; "
+        f"output of commands that mention {RESULTS_DIR} is always returned. The "
+        "working directory persists between calls. `timeout` is in milliseconds "
+        "(default 120000, max 600000)."
     ),
     "inputSchema": {
         "type": "object",
@@ -55,8 +67,8 @@ class BashRunner:
     def __init__(self) -> None:
         self.cwd = os.environ.get("MCP_BASH_CWD") or os.getcwd()
 
-    def run(self, command: str, timeout_ms: int | None) -> tuple[str, bool]:
-        """Run `command` in bash. Returns (text for the model, is_error)."""
+    def run(self, command: str, timeout_ms: int | None) -> tuple[str, bool, str]:
+        """Run `command` in bash. Returns (full output text, is_error, status)."""
         if timeout_ms is None:
             timeout_ms = DEFAULT_TIMEOUT_MS
         timeout_ms = int(min(max(timeout_ms, 1), MAX_TIMEOUT_MS))
@@ -78,10 +90,10 @@ class BashRunner:
             partial = _decode(exc.stdout) + _decode(exc.stderr)
             text = f"Command timed out after {timeout_ms}ms"
             if partial.strip():
-                text += "\n" + _truncate(partial)
-            return text, True
+                text += "\n" + partial
+            return text, True, "timed out"
         except FileNotFoundError:
-            return "bash not found in this environment", True
+            return "bash not found in this environment", True, "bash not found"
 
         stdout, new_cwd = _split_cwd_marker(proc.stdout)
         if new_cwd and os.path.isdir(new_cwd):
@@ -95,7 +107,7 @@ class BashRunner:
         if proc.returncode != 0:
             parts.append(f"Exit code {proc.returncode}")
         text = "\n".join(parts) if parts else "(no output)"
-        return _truncate(text), proc.returncode != 0
+        return text, proc.returncode != 0, f"exit code {proc.returncode}"
 
 
 def _decode(data) -> str:
@@ -122,6 +134,22 @@ def _truncate(text: str) -> str:
     return text[:half] + f"\n\n... [{dropped} characters truncated] ...\n\n" + text[-half:]
 
 
+class ResultStore:
+    """Saves long bash outputs to RESULTS_DIR/NNNN.txt."""
+
+    def __init__(self, directory: str) -> None:
+        self.dir = directory
+        os.makedirs(self.dir, exist_ok=True)
+        self.count = 0
+
+    def save(self, text: str) -> str:
+        self.count += 1
+        path = os.path.join(self.dir, f"{self.count:04d}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        return path
+
+
 def reply(msg_id, result=None, error=None) -> None:
     msg = {"jsonrpc": "2.0", "id": msg_id}
     if error is not None:
@@ -134,7 +162,8 @@ def reply(msg_id, result=None, error=None) -> None:
 
 def main() -> None:
     runner = BashRunner()
-    log(f"started, cwd={runner.cwd}")
+    store = ResultStore(RESULTS_DIR)
+    log(f"started, cwd={runner.cwd}, results={store.dir}")
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -172,8 +201,17 @@ def main() -> None:
                 reply(msg_id, {"content": [{"type": "text", "text": "Missing required `command`"}],
                                "isError": True})
                 continue
-            text, is_error = runner.run(command, args.get("timeout"))
-            reply(msg_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
+            text, is_error, status = runner.run(command, args.get("timeout"))
+            if len(text) <= SAVE_THRESHOLD_CHARS or store.dir in command:
+                # Short output, or the model is reading a saved file: send it directly.
+                reply(msg_id, {"content": [{"type": "text", "text": _truncate(text)}],
+                               "isError": is_error})
+                continue
+            path = store.save(text)
+            n_lines = text.count("\n") + 1
+            note = (f"Output too long to show ({len(text)} chars, {n_lines} lines, "
+                    f"{status}). Saved to {path}; read it with sed -n, head, tail or grep.")
+            reply(msg_id, {"content": [{"type": "text", "text": note}], "isError": is_error})
         elif method == "ping":
             reply(msg_id, {})
         else:

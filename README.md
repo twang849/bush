@@ -257,7 +257,7 @@ experiment with how commands are run, edit one file and re-run.
 
 | File | What it is |
 |---|---|
-| `mcp_bash/server.py` | The MCP server. Plain Python 3, no packages, so it runs inside any task container that has `python3`. Offers one tool, `bash`, with the same inputs as the real tool (`command`, `timeout` in ms, `description`). Remembers the working directory between calls, returns stdout + stderr, adds `Exit code N` when non-zero, kills the command after the timeout, truncates output over 30k characters. |
+| `mcp_bash/server.py` | The MCP server. Plain Python 3, no packages, so it runs inside any task container that has `python3`. Offers one tool, `bash`, with the same inputs as the real tool (`command`, `timeout` in ms, `description`). Remembers the working directory between calls, returns stdout + stderr, adds `Exit code N` when non-zero, kills the command after the timeout, truncates output over 30k characters. Output over 2000 characters is not returned: it is saved to `/tmp/mcp_bash_results/NNNN.txt` and the reply gives only the path, exit code and size. Commands that mention that folder (e.g. `sed -n 1,50p /tmp/mcp_bash_results/0003.txt`) always get their output directly. Runs before 2026-09-25 returned all output directly. |
 | `mcp_bash_agent.py` | A Harbor agent that is the built-in `claude-code` agent plus two things: it uploads `server.py` to `/opt/mcp_bash/` in the container, and registers it as MCP server `mcpbash`. Subscription auth, trajectories and all `--ak` options are inherited unchanged. |
 | `run_mcp_bash.sh` | One-line launcher. `./run_mcp_bash.sh ['*task-glob'] [job-name]`. `MODEL=... ./run_mcp_bash.sh` to change the model. |
 
