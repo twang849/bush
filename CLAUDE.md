@@ -42,9 +42,6 @@ run_mcp_bash.sh
 - `mcp_bash_agent.py` – the custom Harbor agent (`ClaudeCodeMcpBash`).
 - `mcp_bash/server.py` – the MCP server. Stdlib only, JSON-RPC over stdin/stdout, one `bash`
   tool that mimics the real one (persistent cwd, timeout, stdout+stderr, exit code).
-  It also caches the last output of each exact command (in memory, per session): a repeat
-  with the same output returns a short "unchanged" note, a changed output returns a unified diff
-  (or the full output if more than 50% of lines changed).
 - `jobs/` – Harbor run outputs (gitignored). One folder per `--job-name`.
 - `.env.local`, `*.log` – local auth and run logs (gitignored).
 
